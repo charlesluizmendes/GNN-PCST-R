@@ -1,9 +1,9 @@
 import argparse
 import csv
 import json
-import random
 import sys
 from pathlib import Path
+import heapq
 
 def _find_file(root: Path, name: str) -> Path | None:
     direct = root / name
@@ -120,6 +120,14 @@ def _validate_graph_obj(obj, nodes_count):
             raise ValueError("edge_attr possui NaN/Inf")
     return num_nodes, int(edge_index.size(1)), edge_index
 
+def _parse_snapshot_ids_txt(snap_path: Path):
+    ids = []
+    for ln in snap_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        s = ln.strip()
+        if s:
+            ids.append(s)
+    return ids, set(ids)
+
 def _parse_snapshots_txt(snap_path: Path):
     refs = []
     base = snap_path.parent
@@ -205,7 +213,108 @@ def _extract_snapshot_id_from_graph_obj(obj, path: Path):
         return name[len("as_graph_"):]
     return name
 
-def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, physical_edge_sets: dict[str, set], seed: int = 123):
+def _build_undirected_cost_map_from_graph_obj(obj):
+    import torch
+    if not isinstance(obj, dict):
+        raise ValueError("grafo .pt nao e dict")
+    ei = obj.get("edge_index")
+    if ei is None:
+        raise ValueError("edge_index ausente no grafo")
+    et = obj.get("edge_type")
+    if et is None:
+        et = torch.zeros((ei.size(1),), dtype=torch.uint8)
+    n_edges = int(ei.size(1))
+
+    pair_type = {}
+    for i in range(n_edges):
+        u = int(ei[0, i].item())
+        v = int(ei[1, i].item())
+        t = int(et[i].item())
+        a = u if u < v else v
+        b = v if u < v else u
+        key = (a, b)
+        prev = pair_type.get(key)
+        if prev is None:
+            pair_type[key] = t
+        else:
+            if prev != 0 and t == 0:
+                pair_type[key] = 0
+
+    cost_map = {}
+    for (a, b), t in pair_type.items():
+        cost_map[(a, b)] = 1.0 if int(t) == 0 else 1.2
+    return cost_map
+
+def _build_adj_from_cost_map(cost_map, num_nodes):
+    adj = [[] for _ in range(num_nodes)]
+    for (a, b), c in cost_map.items():
+        if 0 <= a < num_nodes and 0 <= b < num_nodes:
+            adj[a].append((b, float(c)))
+            adj[b].append((a, float(c)))
+    return adj
+
+def _dijkstra_prev(adj, root):
+    n = len(adj)
+    root = int(root)
+    dist = [float("inf")] * n
+    prev = [-1] * n
+    dist[root] = 0.0
+    heap = [(0.0, root)]
+    while heap:
+        d, u = heapq.heappop(heap)
+        if d != dist[u]:
+            continue
+        for v, w in adj[u]:
+            nd = d + w
+            if nd < dist[v]:
+                dist[v] = nd
+                prev[v] = u
+                heapq.heappush(heap, (nd, v))
+    return dist, prev
+
+def _reachable_from_root_unweighted(adj, root):
+    root = int(root)
+    if root < 0 or root >= len(adj):
+        return set()
+    seen = set()
+    stack = [root]
+    while stack:
+        u = stack.pop()
+        if u in seen:
+            continue
+        seen.add(u)
+        for v, _ in adj[u]:
+            if v not in seen:
+                stack.append(v)
+    return seen
+
+def _baseline_union_edges_cost(prev, root, terminals, cost_map):
+    root = int(root)
+    edges = set()
+    for t in terminals:
+        cur = int(t)
+        if cur == root:
+            continue
+        guard = 0
+        while cur != root:
+            p = prev[cur]
+            if p is None or int(p) < 0:
+                raise ValueError("baseline: terminal inalcançavel a partir do root")
+            a, b = _normalize_edge(int(p), int(cur))
+            edges.add((a, b))
+            cur = int(p)
+            guard += 1
+            if guard > 10_000_000:
+                raise ValueError("baseline: loop detectado na reconstrucao")
+    cost = 0.0
+    for e in edges:
+        c = cost_map.get(e)
+        if c is None:
+            raise ValueError("baseline: aresta fora do grafo fisico")
+        cost += float(c)
+    return edges, cost
+
+def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, snapshots_txt_set: set[str], graphs_by_snapshot: dict[str, dict]):
     jsonl_files = sorted(list(labels_dir.rglob("*.jsonl")))
     if not jsonl_files:
         return None
@@ -223,19 +332,32 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
                 raise ValueError("instances.jsonl possui id nao-inteiro")
         else:
             inst_id = i
+
         snap = inst.get("snapshot")
+        snap_next = inst.get("snapshot_next")
         root = inst.get("root")
         terms = _extract_terminals_from_instance(inst)
+
         if snap is None:
             raise ValueError(f"instancia sem snapshot: id={inst_id}")
         if root is None:
             raise ValueError(f"instancia sem root: id={inst_id}")
         if terms is None:
             raise ValueError(f"instancia sem terminals: id={inst_id}")
+
+        snap = str(snap)
+        snap_next = str(snap_next) if snap_next is not None else None
+
+        if snap not in snapshots_txt_set:
+            raise ValueError(f"snapshot nao existe em snapshots.txt: id={inst_id} snapshot={snap}")
+        if snap_next is not None and snap_next not in snapshots_txt_set:
+            raise ValueError(f"snapshot_next nao existe em snapshots.txt: id={inst_id} snapshot_next={snap_next}")
+
         try:
             r = int(root)
         except Exception:
             raise ValueError(f"instancia root nao-inteiro: id={inst_id}")
+
         t = []
         for v in terms:
             if isinstance(v, bool):
@@ -244,15 +366,23 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
                 t.append(int(v))
             except Exception:
                 raise ValueError(f"instancia terminal nao-inteiro: id={inst_id}")
+
         if not t:
             raise ValueError(f"instancia terminals vazio: id={inst_id}")
         if len(set(t)) != len(t):
             raise ValueError(f"instancia terminals duplicados: id={inst_id}")
+
         inst_by_id[inst_id] = {
-            "snapshot": str(snap),
+            "snapshot": snap,
+            "snapshot_next": snap_next,
             "root": r,
             "terminals": t,
         }
+
+    cost_map_cache = {}
+    adj_cache = {}
+    dijkstra_cache = {}
+    reachable_cache = {}
 
     checked = 0
     ok_range = 0
@@ -267,12 +397,18 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
     ok_pair_snapshot = 0
     ok_pair_root = 0
     ok_pair_terminals_exact = 0
-    ok_pair_terminals_in_tree_nodes = 0
-    ok_pair_all_terminals_reachable = 0
 
     phys_checked = 0
     phys_edge_hits = 0
     phys_edge_total = 0
+
+    sum_tree_nodes = 0
+    sum_tree_edges = 0
+    sum_steiner_nodes = 0
+    sum_pcst_cost = 0.0
+    sum_baseline_cost = 0.0
+    sum_ratio_pcst_over_baseline = 0.0
+    sum_saving = 0.0
 
     it = _tqdm(labels, total=len(labels), desc="validate_labels")
     for i, lab in enumerate(it):
@@ -322,6 +458,7 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
                 t_lab.append(int(v))
             except Exception:
                 raise ValueError(f"label terminal nao-inteiro: id={lab_id}")
+
         if t_lab == inst["terminals"]:
             ok_pair_terminals_exact += 1
         else:
@@ -329,6 +466,32 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
                 ok_pair_terminals_exact += 1
             else:
                 raise ValueError(f"terminals mismatch: id={lab_id}")
+
+        snap_phys = lab.get("snapshot_next")
+        if snap_phys is None:
+            snap_phys = inst.get("snapshot_next")
+        if snap_phys is None:
+            snap_phys = lab.get("snapshot")
+        snap_phys = str(snap_phys)
+
+        if snap_phys not in snapshots_txt_set:
+            raise ValueError(f"snapshot_next nao existe em snapshots.txt: id={lab_id} snapshot_next={snap_phys}")
+
+        g = graphs_by_snapshot.get(snap_phys)
+        if g is None:
+            raise ValueError(f"grafo nao encontrado para snapshot_next={snap_phys}")
+
+        num_nodes = int(g.get("num_nodes", 0))
+        if num_nodes <= 0:
+            raise ValueError(f"num_nodes invalido no grafo: snapshot={snap_phys}")
+
+        if snap_phys not in cost_map_cache:
+            cost_map_cache[snap_phys] = _build_undirected_cost_map_from_graph_obj(g)
+        cost_map = cost_map_cache[snap_phys]
+
+        if snap_phys not in adj_cache:
+            adj_cache[snap_phys] = _build_adj_from_cost_map(cost_map, num_nodes)
+        adj = adj_cache[snap_phys]
 
         tree_nodes = lab.get("tree_nodes")
         tree_edges = lab.get("tree_edges")
@@ -407,10 +570,10 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         else:
             raise ValueError(f"nao e arvore (E != V-1): id={lab_id}")
 
-        adj = {v: [] for v in node_set}
+        adj_tree = {v: [] for v in node_set}
         for a, b in norm_edges:
-            adj[a].append(b)
-            adj[b].append(a)
+            adj_tree[a].append(b)
+            adj_tree[b].append(a)
 
         start = r
         seen = set()
@@ -420,7 +583,7 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
             if cur in seen:
                 continue
             seen.add(cur)
-            for nx in adj.get(cur, []):
+            for nx in adj_tree.get(cur, []):
                 if nx not in seen:
                     stack.append(nx)
 
@@ -429,27 +592,58 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         else:
             raise ValueError(f"tree nao conectada: id={lab_id}")
 
-        ok_pair_terminals_in_tree_nodes += 1
-        ok_pair_all_terminals_reachable += 1
+        key_reach = (snap_phys, int(r))
+        if key_reach not in reachable_cache:
+            reachable_cache[key_reach] = _reachable_from_root_unweighted(adj, int(r))
+        reach_set = reachable_cache[key_reach]
 
-        snap_phys = lab.get("snapshot_next")
-        if snap_phys is None:
-            snap_phys = lab.get("snapshot")
-        snap_phys = str(snap_phys)
+        if not node_set.issubset(reach_set):
+            raise ValueError(f"tree_nodes fora do componente do root no snapshot_next: id={lab_id}")
 
-        phys_set = physical_edge_sets.get(snap_phys)
-        if phys_set is None:
-            raise ValueError(f"physical_edge_set ausente para snapshot={snap_phys}")
-
+        pcst_cost = 0.0
         if norm_edges:
             phys_checked += 1
             for a, b in norm_edges:
-                if (a, b) in phys_set:
-                    phys_edge_hits += 1
+                c = cost_map.get((a, b))
+                if c is None:
+                    raise ValueError(f"aresta do PCST nao existe no grafo fisico: id={lab_id}")
+                pcst_cost += float(c)
+                phys_edge_hits += 1
             phys_edge_total += len(norm_edges)
+
+        key_dij = (snap_phys, int(r))
+        if key_dij not in dijkstra_cache:
+            dist, prev = _dijkstra_prev(adj, int(r))
+            dijkstra_cache[key_dij] = (dist, prev)
+        _, prev = dijkstra_cache[key_dij]
+
+        baseline_edges, baseline_cost = _baseline_union_edges_cost(prev, int(r), t_lab, cost_map)
+
+        sum_tree_nodes += len(node_set)
+        sum_tree_edges += len(norm_edges)
+
+        terminals_set = set(t_lab)
+        steiner_nodes = node_set - terminals_set - {int(r)}
+        sum_steiner_nodes += len(steiner_nodes)
+
+        sum_pcst_cost += float(pcst_cost)
+        sum_baseline_cost += float(baseline_cost)
+
+        if baseline_cost > 0:
+            ratio = float(pcst_cost) / float(baseline_cost)
+            sum_ratio_pcst_over_baseline += ratio
+            sum_saving += (1.0 - ratio)
 
     def ratio(x):
         return (x / checked) if checked else None
+
+    avg_tree_nodes = (sum_tree_nodes / checked) if checked else None
+    avg_tree_edges = (sum_tree_edges / checked) if checked else None
+    avg_steiner_ratio = (sum_steiner_nodes / sum_tree_nodes) if sum_tree_nodes > 0 else None
+    avg_pcst_cost = (sum_pcst_cost / checked) if checked else None
+    avg_baseline_cost = (sum_baseline_cost / checked) if checked else None
+    avg_ratio_pcst_over_baseline = (sum_ratio_pcst_over_baseline / checked) if checked else None
+    avg_saving = (sum_saving / checked) if checked else None
 
     return {
         "labels_format": "jsonl",
@@ -467,10 +661,15 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         "labels_pair_snapshot_match": ratio(ok_pair_snapshot),
         "labels_pair_root_match": ratio(ok_pair_root),
         "labels_pair_terminals_match": ratio(ok_pair_terminals_exact),
-        "labels_pair_terminals_in_tree_nodes": ratio(ok_pair_terminals_in_tree_nodes),
-        "labels_pair_all_terminals_reachable": ratio(ok_pair_all_terminals_reachable),
         "labels_physical_checked_instances": phys_checked,
         "labels_physical_edge_hit_ratio": (phys_edge_hits / phys_edge_total) if phys_edge_total > 0 else None,
+        "metrics_avg_tree_nodes": avg_tree_nodes,
+        "metrics_avg_tree_edges": avg_tree_edges,
+        "metrics_avg_steiner_ratio": avg_steiner_ratio,
+        "metrics_avg_pcst_cost": avg_pcst_cost,
+        "metrics_avg_baseline_cost": avg_baseline_cost,
+        "metrics_avg_pcst_over_baseline": avg_ratio_pcst_over_baseline,
+        "metrics_avg_cost_saving": avg_saving,
     }
 
 def validate_dataset(input_dir: Path):
@@ -491,6 +690,8 @@ def validate_dataset(input_dir: Path):
 
     node_ids, node_set = _load_nodes_csv(nodes_path)
 
+    snap_ids_list, snap_ids_set = _parse_snapshot_ids_txt(snaps_path)
+
     pt_files = _iter_graph_pt_files(input_dir)
     if not pt_files:
         raise ValueError("nenhum .pt encontrado")
@@ -506,6 +707,7 @@ def validate_dataset(input_dir: Path):
     total_nodes = 0
     total_edges = 0
 
+    graphs_by_snapshot = {}
     physical_edge_sets = {}
     physical_sizes = []
 
@@ -517,16 +719,31 @@ def validate_dataset(input_dir: Path):
         total_nodes += n
         total_edges += e
         snap_id = _extract_snapshot_id_from_graph_obj(obj, p)
+        graphs_by_snapshot[str(snap_id)] = obj
         phys = _build_physical_edge_set(edge_index)
         physical_edge_sets[str(snap_id)] = phys
         physical_sizes.append(len(phys))
 
+    for sid in snap_ids_set:
+        if sid not in graphs_by_snapshot:
+            raise ValueError(f"snapshot em snapshots.txt sem arquivo .pt correspondente: snapshot={sid}")
+
+    print("  -> Validando instances.jsonl")
     instances = _read_jsonl(inst_path)
 
     min_k = None
     max_k = None
     it2 = _tqdm(instances, total=len(instances), desc="validate_instances")
     for obj in it2:
+        snap = obj.get("snapshot")
+        snap_next = obj.get("snapshot_next")
+        if snap is None:
+            raise ValueError("instancia sem snapshot")
+        if str(snap) not in snap_ids_set:
+            raise ValueError("instancia snapshot nao existe em snapshots.txt")
+        if snap_next is not None and str(snap_next) not in snap_ids_set:
+            raise ValueError("instancia snapshot_next nao existe em snapshots.txt")
+
         terminals = _extract_terminals_from_instance(obj)
         if terminals is None:
             raise ValueError("instancia sem terminals")
@@ -549,12 +766,13 @@ def validate_dataset(input_dir: Path):
     labels_dir = _labels_probe_dir(input_dir)
     labels_stats = None
     if labels_dir is not None:
+        print("  -> Validando labels.jsonl")
         labels_stats = _validate_labels(
             labels_dir=labels_dir,
             instances=instances,
             nodes_count=len(node_ids),
-            physical_edge_sets=physical_edge_sets,
-            seed=123,
+            snapshots_txt_set=snap_ids_set,
+            graphs_by_snapshot=graphs_by_snapshot,
         )
 
     report = {
@@ -570,6 +788,7 @@ def validate_dataset(input_dir: Path):
         "instances_terminals_k_min": min_k,
         "instances_terminals_k_max": max_k,
         "snapshot_pt_refs_found": len(snap_refs),
+        "snapshots_txt_count": len(snap_ids_list),
         "check_physical_edges": True,
         "physical_edge_sets_snapshots": len(physical_edge_sets),
         "physical_edge_set_size_min": min(physical_sizes) if physical_sizes else None,
@@ -589,16 +808,16 @@ def main():
     args = ap.parse_args()
 
     report = validate_dataset(Path(args.input_dir))
-
     out_pretty = json.dumps(report, ensure_ascii=False, indent=2)
 
     if args.output_dir:
         out_dir = Path(args.output_dir).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "validate.jsonl").write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"  -> Relatorio salvo em: {str((out_dir / 'validate.jsonl').resolve())}")
 
-    print(f"  -> Validações geradas: {out_pretty}")
-
+    print("  -> Validações geradas:")
+    print(out_pretty)
 
 if __name__ == "__main__":
     try:
