@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from src import build_snapshots, generate_instances, populate_labels
+from test import validate_dataset
 
 
 def _run(mod, argv):
@@ -29,17 +30,19 @@ def main():
     snapshots_dir = str((out_base / "snapshots").resolve())
     instances_dir = str((out_base / "instances").resolve())
     labels_dir = str((out_base / "labels").resolve())
+    validate_dir = str((out_base / "validate").resolve())
 
     _run(
-        build_snapshots, 
+        build_snapshots,
         [
-            "build_snapshots.py", 
-            "--input_dir", 
-            input_dir, 
-            "--output_dir", 
-            snapshots_dir
-        ]
+            "build_snapshots.py",
+            "--input_dir",
+            input_dir,
+            "--output_dir",
+            snapshots_dir,
+        ],
     )
+
     _run(
         generate_instances,
         [
@@ -54,17 +57,30 @@ def main():
             str(args.min_degree),
         ],
     )
+
     _run(
-        populate_labels, 
+        populate_labels,
         [
-            "populate_labels.py", 
-            "--input_dir", 
-            snapshots_dir, 
-            instances_dir, 
-            "--output_dir", 
-            labels_dir            
-        ]
+            "populate_labels.py",
+            "--input_dir",
+            snapshots_dir,
+            instances_dir,
+            "--output_dir",
+            labels_dir,
+        ],
     )
+
+    _run(
+        validate_dataset,
+        [
+            "validate_dataset_as.py",
+            "--input_dir",
+            str(out_base),
+            "--output_dir",
+            validate_dir,
+        ],
+    )
+
 
 if __name__ == "__main__":
     main()
