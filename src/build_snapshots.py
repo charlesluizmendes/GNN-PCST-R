@@ -1,8 +1,9 @@
 import argparse
 import bz2
 import csv
-from pathlib import Path
 import torch
+from pathlib import Path
+from tqdm import tqdm
 
 def open_text(path):
     p = str(path)
@@ -40,7 +41,6 @@ def main():
 
     files = sorted(list(input_dir.glob("*.txt")) + list(input_dir.glob("*.txt.bz2")))
     if not files:
-        print("0 0")
         return
 
     nodes = set()
@@ -52,18 +52,19 @@ def main():
     asn_list = sorted(nodes)
     asn2id = {asn: i for i, asn in enumerate(asn_list)}
 
-    with open(output_dir / "nodes.csv", "w", newline="", encoding="utf-8") as f:
+    nodes_path = output_dir / "nodes.csv"
+    with open(nodes_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["node_id", "asn"])
-        for asn, i in asn2id.items():
+        for asn, i in tqdm(asn2id.items(), total=len(asn2id), desc="build_snapshots: salvando nodes.csv", unit="nó"):
             w.writerow([i, asn])
 
-    with open(output_dir / "snapshots.txt", "w", encoding="utf-8") as f:
-        for p in files:
+    snaps_path = output_dir / "snapshots.txt"
+    with open(snaps_path, "w", encoding="utf-8") as f:
+        for p in tqdm(files, desc="build_snapshots: salvando snapshots.txt", unit="snapshot"):
             f.write(snapshot_name(p) + "\n")
 
-    total_graphs = 0
-    for p in files:
+    for p in tqdm(files, desc="build_snapshots: gerando grafos .pt", unit="snapshot"):
         src = []
         dst = []
         et = []
@@ -92,10 +93,7 @@ def main():
         out_path = output_dir / f"as_graph_{obj['snapshot']}.pt"
         torch.save(obj, out_path)
 
-        total_graphs += 1
-        print(obj["snapshot"], obj["num_nodes"], int(edge_index.size(1)), str(out_path))
-
-    print("DONE", total_graphs, len(asn2id), str(output_dir))
+    print()
 
 if __name__ == "__main__":
     main()

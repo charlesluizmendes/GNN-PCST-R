@@ -1,9 +1,10 @@
 import argparse
 import json
-from pathlib import Path
 import numpy as np
 import torch
+from pathlib import Path
 from pcst_fast import pcst_fast as pcst
+from tqdm import tqdm
 
 def call_pcst(fn, edges, prizes, costs, root):
     edges = np.asarray(edges, dtype=np.int64)
@@ -71,6 +72,13 @@ def iter_instances(path):
                 continue
             yield json.loads(line)
 
+def count_lines(path):
+    n = 0
+    with open(path, "rb") as f:
+        for _ in f:
+            n += 1
+    return n
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_dir", required=True, nargs=2)
@@ -92,12 +100,17 @@ def main():
     if not instances_path.exists():
         raise FileNotFoundError(str(instances_path))
 
+    total = count_lines(instances_path)
+    if args.max_instances > 0 and args.max_instances < total:
+        total = args.max_instances
+
     graph_cache = {}
     edge_cache = {}
 
     out_path = out_dir / "labels.jsonl"
     written = 0
 
+    bar = tqdm(total=total, desc="populate_labels: escrevendo labels.jsonl", unit="instância")
     with open(out_path, "w", encoding="utf-8") as out_f:
         for inst in iter_instances(instances_path):
             if args.max_instances > 0 and written >= args.max_instances:
@@ -152,8 +165,12 @@ def main():
             }
             out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             written += 1
+            bar.update(1)
 
-    print("DONE", written, str(out_path))
+    if hasattr(bar, "close"):
+        bar.close()
+
+    print()
 
 if __name__ == "__main__":
     main()

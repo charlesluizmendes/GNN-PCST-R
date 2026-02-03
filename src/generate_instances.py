@@ -3,6 +3,13 @@ import json
 import random
 from pathlib import Path
 import torch
+import sys
+
+try:
+    from tqdm import tqdm
+except Exception:
+    def tqdm(it=None, **kwargs):
+        return it
 
 def list_graphs(input_dir):
     d = Path(input_dir)
@@ -37,12 +44,21 @@ def main():
 
     graphs = list_graphs(args.input_dir)
     if not graphs:
-        print("DONE 0 0")
+        print()
         return
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "instances.jsonl"
+
+    bar = tqdm(
+        total=0,
+        desc="generate_instances: escrevendo instances.jsonl",
+        unit="instância",
+        file=sys.stdout,
+        dynamic_ncols=True,
+        leave=True
+    )
 
     total_instances = 0
     with open(out_path, "w", encoding="utf-8") as f:
@@ -69,6 +85,9 @@ def main():
                 if inst_count > remaining:
                     inst_count = remaining
 
+            bar.total = int(bar.total) + int(inst_count)
+            bar.refresh()
+
             rng = random.Random(args.seed + stable_int(snap))
 
             for _ in range(inst_count):
@@ -85,10 +104,10 @@ def main():
                 }
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 total_instances += 1
+                bar.update(1)
 
-            print(snap, n, int(ei.size(1)), inst_count)
-
-    print("DONE", len(graphs), total_instances, str(out_path))
+    bar.close()
+    print()
 
 if __name__ == "__main__":
     main()
