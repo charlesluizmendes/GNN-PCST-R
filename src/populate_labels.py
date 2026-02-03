@@ -31,7 +31,7 @@ def call_pcst(fn, edges, prizes, costs, root):
 def load_graph(path):
     return torch.load(path, map_location="cpu")
 
-def build_undirected_edges(g, cost_p2p, cost_p2c):
+def build_undirected_edges(g):
     ei = g["edge_index"]
     et = g["edge_type"]
     n_edges = int(ei.size(1))
@@ -56,9 +56,9 @@ def build_undirected_edges(g, cost_p2p, cost_p2c):
     for (a, b), t in pair_type.items():
         edges.append([a, b])
         if t == 0:
-            costs.append(float(cost_p2p))
+            costs.append(1.0)
         else:
-            costs.append(float(cost_p2c))
+            costs.append(1.2)
 
     edges_np = np.asarray(edges, dtype=np.int64)
     costs_np = np.asarray(costs, dtype=np.float64)
@@ -83,26 +83,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_dir", required=True, nargs=2)
     ap.add_argument("--output_dir", required=True)
-    ap.add_argument("--max_instances", type=int, default=-1)
-    ap.add_argument("--cost_p2p", type=float, default=1.0)
-    ap.add_argument("--cost_p2c", type=float, default=1.2)
-    ap.add_argument("--terminal_prize", type=float, default=1000000.0)
-    ap.add_argument("--root_prize", type=float, default=1000000.0)
     args = ap.parse_args()
 
     snapshots_dir = Path(args.input_dir[0])
     instances_dir = Path(args.input_dir[1])
-
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     instances_path = instances_dir / "instances.jsonl"
     if not instances_path.exists():
-        raise FileNotFoundError(str(instances_path))
+        raise FileNotFoundError(f"instances.jsonl não encontrado em {instances_dir}")
 
     total = count_lines(instances_path)
-    if args.max_instances > 0 and args.max_instances < total:
-        total = args.max_instances
 
     graph_cache = {}
     edge_cache = {}
@@ -110,19 +102,20 @@ def main():
     out_path = out_dir / "labels.jsonl"
     written = 0
 
-    bar = tqdm(total=total, desc="populate_labels: escrevendo labels.jsonl", unit="instância")
     with open(out_path, "w", encoding="utf-8") as out_f:
-        for inst in iter_instances(instances_path):
-            if args.max_instances > 0 and written >= args.max_instances:
-                break
-
+        for inst in tqdm(
+            iter_instances(instances_path),
+            total=total,
+            desc="populate_labels: escrevendo labels.jsonl",
+            unit="instância"
+        ):
             snap = inst["snapshot"]
             gid = f"as_graph_{snap}.pt"
             gp = snapshots_dir / gid
 
             if snap not in graph_cache:
                 if not gp.exists():
-                    raise FileNotFoundError(str(gp))
+                    raise FileNotFoundError(f"Grafo não encontrado: {gp}")
                 g = load_graph(gp)
                 graph_cache[snap] = g
             else:
@@ -131,7 +124,7 @@ def main():
             n = int(g["num_nodes"])
 
             if snap not in edge_cache:
-                edges_u, costs_u = build_undirected_edges(g, args.cost_p2p, args.cost_p2c)
+                edges_u, costs_u = build_undirected_edges(g)
                 edge_cache[snap] = (edges_u, costs_u)
             else:
                 edges_u, costs_u = edge_cache[snap]
@@ -140,9 +133,9 @@ def main():
             root = int(inst["root"])
             terminals = [int(x) for x in inst["terminals"]]
 
-            prizes[root] = float(args.root_prize)
+            prizes[root] = 1000000.0
             for t in terminals:
-                prizes[t] = float(args.terminal_prize)
+                prizes[t] = 1000000.0
 
             sel_nodes, sel_edges = call_pcst(pcst, edges_u, prizes, costs_u, root)
 
@@ -165,12 +158,9 @@ def main():
             }
             out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             written += 1
-            bar.update(1)
-
-    if hasattr(bar, "close"):
-        bar.close()
 
     print()
+    print(f"Labels gerados: {written} instâncias")
 
 if __name__ == "__main__":
     main()

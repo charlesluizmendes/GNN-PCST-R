@@ -193,7 +193,7 @@ def _extract_terminals_from_instance(obj: dict):
             return obj[k]
     return None
 
-def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, physical_edge_set=None, sample_k: int | None = None, seed: int = 123):
+def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, physical_edge_set, seed: int = 123):
     jsonl_files = sorted(list(labels_dir.rglob("*.jsonl")))
     if not jsonl_files:
         return None
@@ -263,8 +263,6 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
     phys_checked = 0
     phys_edge_hits = 0
     phys_edge_total = 0
-
-    rng = random.Random(seed)
 
     it = _tqdm(labels, total=len(labels), desc="validate_labels")
     for i, lab in enumerate(it):
@@ -424,17 +422,12 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         ok_pair_terminals_in_tree_nodes += 1
         ok_pair_all_terminals_reachable += 1
 
-        if physical_edge_set is not None and norm_edges:
+        if norm_edges:
             phys_checked += 1
-            sample = norm_edges
-            if sample_k is not None and len(sample) > int(sample_k):
-                sample = rng.sample(sample, int(sample_k))
-            hits = 0
-            for a, b in sample:
+            for a, b in norm_edges:
                 if (a, b) in physical_edge_set:
-                    hits += 1
-            phys_edge_hits += hits
-            phys_edge_total += len(sample)
+                    phys_edge_hits += 1
+            phys_edge_total += len(norm_edges)
 
     def ratio(x):
         return (x / checked) if checked else None
@@ -457,12 +450,11 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         "labels_pair_terminals_match": ratio(ok_pair_terminals_exact),
         "labels_pair_terminals_in_tree_nodes": ratio(ok_pair_terminals_in_tree_nodes),
         "labels_pair_all_terminals_reachable": ratio(ok_pair_all_terminals_reachable),
-        "labels_physical_checked_instances": phys_checked if physical_edge_set is not None else None,
-        "labels_physical_sample_k": (int(sample_k) if sample_k is not None else None) if physical_edge_set is not None else None,
-        "labels_physical_edge_hit_ratio": (phys_edge_hits / phys_edge_total) if (physical_edge_set is not None and phys_edge_total > 0) else None,
+        "labels_physical_checked_instances": phys_checked,
+        "labels_physical_edge_hit_ratio": (phys_edge_hits / phys_edge_total) if phys_edge_total > 0 else None,
     }
 
-def validate_dataset(input_dir: Path, check_physical_edges: bool, sample_k: int | None, seed: int):
+def validate_dataset(input_dir: Path):
     input_dir = input_dir.resolve()
     if not input_dir.exists():
         raise ValueError("input_dir nao existe")
@@ -531,11 +523,9 @@ def validate_dataset(input_dir: Path, check_physical_edges: bool, sample_k: int 
         min_k = kk if min_k is None else min(min_k, kk)
         max_k = kk if max_k is None else max(max_k, kk)
 
-    physical_edge_set = None
-    if check_physical_edges:
-        if first_edge_index is None:
-            raise ValueError("edge_index nao encontrado para checagem fisica")
-        physical_edge_set = _build_physical_edge_set(first_edge_index)
+    if first_edge_index is None:
+        raise ValueError("edge_index nao encontrado")
+    physical_edge_set = _build_physical_edge_set(first_edge_index)
 
     labels_dir = _labels_probe_dir(input_dir)
     labels_stats = None
@@ -545,8 +535,7 @@ def validate_dataset(input_dir: Path, check_physical_edges: bool, sample_k: int 
             instances=instances,
             nodes_count=len(node_ids),
             physical_edge_set=physical_edge_set,
-            sample_k=sample_k,
-            seed=seed,
+            seed=123,
         )
 
     report = {
@@ -562,8 +551,8 @@ def validate_dataset(input_dir: Path, check_physical_edges: bool, sample_k: int 
         "instances_terminals_k_min": min_k,
         "instances_terminals_k_max": max_k,
         "snapshot_pt_refs_found": len(snap_refs),
-        "check_physical_edges": bool(check_physical_edges),
-        "physical_edge_set_size": len(physical_edge_set) if physical_edge_set is not None else None,
+        "check_physical_edges": True,
+        "physical_edge_set_size": len(physical_edge_set),
     }
 
     if labels_stats is not None:
@@ -574,27 +563,11 @@ def validate_dataset(input_dir: Path, check_physical_edges: bool, sample_k: int 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_dir", required=True)
-    ap.add_argument("--output_dir", default=None)
-    ap.add_argument("--check_physical_edges", action="store_true")
-    ap.add_argument("--sample_k", type=int, default=None)
-    ap.add_argument("--seed", type=int, default=123)
     args = ap.parse_args()
 
-    report = validate_dataset(
-        Path(args.input_dir),
-        check_physical_edges=bool(args.check_physical_edges),
-        sample_k=args.sample_k if args.sample_k is not None else None,
-        seed=int(args.seed),
-    )
+    report = validate_dataset(Path(args.input_dir))
 
-    out_pretty = json.dumps(report, ensure_ascii=False, indent=2)
-
-    if args.output_dir:
-        out_dir = Path(args.output_dir).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "validate.jsonl").write_text(out_pretty + "\n", encoding="utf-8")
-
-    print(out_pretty)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     try:

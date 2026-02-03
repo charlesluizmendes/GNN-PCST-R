@@ -18,7 +18,7 @@ def main():
     if not root.exists() or not root.is_dir():
         raise ValueError(f"input_dir invalido: {root}")
 
-    exts = {".txt", ".pt", ".csv", ".jsonl"}
+    exts = {".csv", ".txt", ".pt", ".jsonl"}
     targets = []
     for p in root.rglob("*"):
         if p.is_file() and p.suffix.lower() in exts:
@@ -27,7 +27,7 @@ def main():
     removed = 0
     failed = 0
 
-    for p in _tqdm(targets, total=len(targets), desc="auto_clean: removendo .txt .pt .csv .jsonl"):
+    for p in _tqdm(targets, total=len(targets), desc="auto_clean: removendo .csv .txt .pt .jsonl"):
         try:
             p.unlink()
             removed += 1

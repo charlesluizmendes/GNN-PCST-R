@@ -17,8 +17,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_dir", default="input")
     ap.add_argument("--output_dir", default="output")
-    ap.add_argument("--k_terminals", type=int, default=20)
-    ap.add_argument("--min_degree", type=int, default=0)
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parent
@@ -28,7 +26,6 @@ def main():
     snapshots_dir = str((out_base / "snapshots").resolve())
     instances_dir = str((out_base / "instances").resolve())
     labels_dir = str((out_base / "labels").resolve())
-    validate_dir = str((out_base / "validate").resolve())
 
     _run(
         auto_clean,
@@ -58,10 +55,6 @@ def main():
             snapshots_dir,
             "--output_dir",
             instances_dir,
-            "--k_terminals",
-            str(args.k_terminals),
-            "--min_degree",
-            str(args.min_degree),
         ],
     )
 
@@ -83,9 +76,6 @@ def main():
             "validate_dataset.py",
             "--input_dir",
             str(out_base),
-            "--output_dir",
-            validate_dir,
-            "--check_physical_edges",
         ],
     )
 
