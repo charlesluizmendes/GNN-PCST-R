@@ -34,9 +34,10 @@ $ pip install -r requirements.txt
 Or, if you prefer, to install each project dependency manually, run the commands below:
 
 ```
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install tqdm
 pip install numpy
 pip install pcst_fast
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
 ### Dataset 
@@ -44,3 +45,9 @@ pip install pcst_fast
 the dataset used for pre-training the model is the [CAIDA](https://publicdata.caida.org/).
 
 Download the dataset by clicking [here](https://publicdata.caida.org/datasets/as-relationships/serial-2/), then move the files to directory "inputs".
+
+To generate the dataset, run the command below.
+
+```
+python main.py 
+```
