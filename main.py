@@ -26,6 +26,7 @@ def main():
     snapshots_dir = str((out_base / "snapshots").resolve())
     instances_dir = str((out_base / "instances").resolve())
     labels_dir = str((out_base / "labels").resolve())
+    validate_dir = str((out_base / "validate").resolve())
 
     _run(
         auto_clean,
@@ -76,6 +77,8 @@ def main():
             "validate_dataset.py",
             "--input_dir",
             str(out_base),
+            "--output_dir",
+            validate_dir,
         ],
     )
 

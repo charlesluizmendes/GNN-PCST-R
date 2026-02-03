@@ -188,7 +188,7 @@ def _labels_probe_dir(input_dir: Path) -> Path | None:
     return None
 
 def _extract_terminals_from_instance(obj: dict):
-    for k in ["terminals", "terminal_nodes", "terminal", "T", "query_nodes"]:
+    for k in ["terminals_out", "terminals_in", "terminals", "terminal_nodes", "terminal", "T", "query_nodes"]:
         if k in obj and isinstance(obj[k], list):
             return obj[k]
     return None
@@ -203,7 +203,6 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         raise ValueError("labels nao alinhados com instancias")
 
     inst_by_id = {}
-    inst_missing_id = 0
     for i, inst in enumerate(instances):
         if "id" in inst:
             try:
@@ -211,7 +210,6 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
             except Exception:
                 raise ValueError("instances.jsonl possui id nao-inteiro")
         else:
-            inst_missing_id += 1
             inst_id = i
         snap = inst.get("snapshot")
         root = inst.get("root")
@@ -301,7 +299,7 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         else:
             raise ValueError(f"root mismatch: id={lab_id}")
 
-        terminals_lab = lab.get("terminals")
+        terminals_lab = _extract_terminals_from_instance(lab)
         if not isinstance(terminals_lab, list):
             raise ValueError(f"label sem terminals: id={lab_id}")
         t_lab = []
@@ -563,11 +561,19 @@ def validate_dataset(input_dir: Path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_dir", required=True)
+    ap.add_argument("--output_dir", required=False, default=None)
     args = ap.parse_args()
 
     report = validate_dataset(Path(args.input_dir))
 
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    out_pretty = json.dumps(report, ensure_ascii=False, indent=2)
+
+    if args.output_dir:
+        out_dir = Path(args.output_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "validate.jsonl").write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    print(out_pretty)
 
 if __name__ == "__main__":
     try:

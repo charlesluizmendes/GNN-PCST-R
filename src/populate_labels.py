@@ -109,29 +109,34 @@ def main():
             desc="populate_labels: escrevendo labels.jsonl",
             unit="instância"
         ):
-            snap = inst["snapshot"]
-            gid = f"as_graph_{snap}.pt"
+            snap_next = inst.get("snapshot_next") or inst.get("snapshot")
+            gid = f"as_graph_{snap_next}.pt"
             gp = snapshots_dir / gid
 
-            if snap not in graph_cache:
+            if snap_next not in graph_cache:
                 if not gp.exists():
                     raise FileNotFoundError(f"Grafo não encontrado: {gp}")
                 g = load_graph(gp)
-                graph_cache[snap] = g
+                graph_cache[snap_next] = g
             else:
-                g = graph_cache[snap]
+                g = graph_cache[snap_next]
 
             n = int(g["num_nodes"])
 
-            if snap not in edge_cache:
+            if snap_next not in edge_cache:
                 edges_u, costs_u = build_undirected_edges(g)
-                edge_cache[snap] = (edges_u, costs_u)
+                edge_cache[snap_next] = (edges_u, costs_u)
             else:
-                edges_u, costs_u = edge_cache[snap]
+                edges_u, costs_u = edge_cache[snap_next]
 
             prizes = np.zeros(n, dtype=np.float64)
             root = int(inst["root"])
-            terminals = [int(x) for x in inst["terminals"]]
+
+            terminals = inst.get("terminals_out")
+            if terminals is None:
+                terminals = inst.get("terminals", [])
+
+            terminals = [int(x) for x in terminals]
 
             prizes[root] = 1000000.0
             for t in terminals:
@@ -150,17 +155,21 @@ def main():
 
             rec = {
                 "id": int(inst["id"]),
-                "snapshot": snap,
+                "snapshot": inst.get("snapshot", ""),
+                "snapshot_next": snap_next,
                 "root": root,
-                "terminals": terminals,
+                "interest_id": int(inst.get("interest_id", -1)),
+                "radius_hops": int(inst.get("radius_hops", -1)),
+                "terminals_in": inst.get("terminals_in", []),
+                "terminals_out": terminals,
                 "tree_nodes": sel_nodes,
                 "tree_edges": tree_edges
             }
             out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             written += 1
 
+    print(f"  -> Labels gerados: {written} instâncias")
     print()
-    print(f"Labels gerados: {written} instâncias")
 
 if __name__ == "__main__":
     main()

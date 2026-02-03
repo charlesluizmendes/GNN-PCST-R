@@ -36,73 +36,84 @@ def build_adjacency_list(edge_index, num_nodes):
         u = int(edge_index[0, i].item())
         v = int(edge_index[1, i].item())
         adj[u].add(v)
+        adj[v].add(u)
     return adj
 
 def identify_server(adj, num_nodes):
     degrees = []
     for node in tqdm(range(num_nodes), desc="build_snapshots: calculando graus", unit="nó"):
         degrees.append(len(adj[node]))
-    
+
     server_id = degrees.index(max(degrees))
     max_degree = degrees[server_id]
-    
+
     print(f"  -> Servidor: node_id={server_id}, grau={max_degree}")
-    
+
     return server_id, degrees
 
 def identify_peripheral_nodes_adaptive(adj, num_nodes, degrees):
     valid_degrees = [d for d in degrees if d > 0]
-    
-    q1 = statistics.quantiles(valid_degrees, n=4)[0]
-    q2 = statistics.quantiles(valid_degrees, n=4)[1]
-    q3 = statistics.quantiles(valid_degrees, n=4)[2]
-    
+
+    if len(valid_degrees) >= 4:
+        qs = statistics.quantiles(valid_degrees, n=4)
+        q1 = qs[0]
+        q2 = qs[1]
+        q3 = qs[2]
+    elif len(valid_degrees) > 0:
+        q1 = float(min(valid_degrees))
+        q2 = float(statistics.median(valid_degrees))
+        q3 = float(max(valid_degrees))
+    else:
+        q1 = 0.0
+        q2 = 0.0
+        q3 = 0.0
+
     print(f"  -> Distribuição de graus: Q1={q1:.1f}, Mediana={q2:.1f}, Q3={q3:.1f}")
-    
+
     neighbor_degree_by_node = []
     for node in tqdm(range(num_nodes), desc="build_snapshots: analisando vizinhanças", unit="nó"):
         if degrees[node] > 0:
             neighbor_degrees = [degrees[n] for n in adj[node]]
             avg_neighbor_degree = sum(neighbor_degrees) / len(neighbor_degrees)
             neighbor_degree_by_node.append(avg_neighbor_degree)
-    
+
     if neighbor_degree_by_node:
         median_neighbor_degree = statistics.median(neighbor_degree_by_node)
     else:
         median_neighbor_degree = 0
-    
+
     print(f"  -> Mediana do grau médio dos vizinhos: {median_neighbor_degree:.1f}")
-    
+
     peripheral = set()
-    
+
     for node in tqdm(range(num_nodes), desc="build_snapshots: classificando antenas", unit="nó"):
         degree = degrees[node]
-        
+
         if degree == 0:
             continue
-        
+
         if degree == 1:
             peripheral.add(node)
             continue
-        
+
         if degree <= q1:
             neighbor_degrees = [degrees[n] for n in adj[node]]
             avg_neighbor_degree = sum(neighbor_degrees) / len(neighbor_degrees)
-            
+
             if avg_neighbor_degree > median_neighbor_degree:
                 peripheral.add(node)
-    
+
     print(f"  -> Antenas identificadas: {len(peripheral)} nós")
-    
+
     return peripheral
 
 def identify_node_types(edge_index, num_nodes):
     adj = build_adjacency_list(edge_index, num_nodes)
-    
+
     server_id, degrees = identify_server(adj, num_nodes)
-    
+
     peripheral = identify_peripheral_nodes_adaptive(adj, num_nodes, degrees)
-    
+
     node_types = {}
     for node in range(num_nodes):
         if node == server_id:
@@ -111,7 +122,7 @@ def identify_node_types(edge_index, num_nodes):
             node_types[node] = "antena"
         else:
             node_types[node] = "roteador"
-    
+
     return node_types, server_id
 
 def build_edge_index_from_file(path, asn2id):
@@ -132,7 +143,7 @@ def build_edge_index_from_file(path, asn2id):
 
     edge_index = torch.tensor([src, dst], dtype=torch.long)
     edge_type = torch.tensor(et, dtype=torch.uint8)
-    
+
     return edge_index, edge_type
 
 def main():
@@ -188,7 +199,7 @@ def main():
         for asn, node_id in tqdm(asn2id.items(), total=len(asn2id), desc="build_snapshots: salvando nodes.csv", unit="nó"):
             tipo = node_types.get(node_id, "roteador")
             w.writerow([node_id, asn, tipo])
-    
+
     print()
 
 if __name__ == "__main__":
