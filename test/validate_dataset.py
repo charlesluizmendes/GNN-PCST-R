@@ -136,6 +136,17 @@ def _validate_graph_obj(obj, nodes_count_global: int | None):
                     raise ValueError("x possui NaN")
                 if torch.isinf(x).any().item():
                     raise ValueError("x possui Inf")
+        if hasattr(obj, "edge_attr") and getattr(obj, "edge_attr") is not None:
+            ea = getattr(obj, "edge_attr")
+            if isinstance(ea, torch.Tensor):
+                if ea.dim() != 2:
+                    raise ValueError("edge_attr deve ser tensor 2D [E, F]")
+                if int(ea.size(0)) != int(edge_index.size(1)):
+                    raise ValueError("edge_attr.size(0) != numero de arestas (E)")
+                if torch.isnan(ea).any().item():
+                    raise ValueError("edge_attr possui NaN")
+                if torch.isinf(ea).any().item():
+                    raise ValueError("edge_attr possui Inf")
     except Exception as e:
         if isinstance(e, ValueError):
             raise
@@ -213,6 +224,13 @@ def _as_int_list(xs):
             raise ValueError(f"terminal nao-inteiro: {v}")
     return out
 
+def _extract_snapshot_id_from_path(p: Path) -> str | None:
+    name = p.stem
+    digits = "".join([c for c in name if c.isdigit()])
+    if len(digits) >= 6:
+        return digits
+    return None
+
 def validate_dataset(input_dir: Path) -> dict:
     input_dir = input_dir.resolve()
     if not input_dir.exists():
@@ -236,15 +254,25 @@ def validate_dataset(input_dir: Path) -> dict:
         raise ValueError("nenhum arquivo .pt encontrado no input_dir")
 
     snap_refs = _parse_snapshots_txt(snaps_path, input_dir)
+    if not snap_refs:
+        raise ValueError("snapshots.txt nao referencia nenhum snapshot")
     missing_refs = [p for p in snap_refs if not p.exists()]
     if missing_refs:
         raise ValueError(f"snapshots.txt referencia .pt inexistente: {missing_refs[0]}")
+
+    snap_refs_norm = [p.resolve() for p in snap_refs]
+    pt_files_norm = [p.resolve() for p in pt_files]
+    pt_set = set(pt_files_norm)
+    snap_set = set(snap_refs_norm)
+
+    extra_pt_not_listed = sorted(list(pt_set - snap_set))
+    missing_pt_listed = sorted(list(snap_set - pt_set))
 
     graphs_checked = 0
     total_nodes_in_graphs = 0
     total_edges_in_graphs = 0
 
-    for p in pt_files[:2000]:
+    for p in snap_refs_norm[:2000]:
         obj = _torch_load(p)
         n, e = _validate_graph_obj(obj, len(node_ids))
         graphs_checked += 1
@@ -254,6 +282,9 @@ def validate_dataset(input_dir: Path) -> dict:
     items = _read_jsonl(inst_path)
     inst_checked = 0
     inst_with_terminals = 0
+
+    min_k = None
+    max_k = None
 
     for obj in items[:200000]:
         terms, key = _extract_terminals(obj)
@@ -269,6 +300,9 @@ def validate_dataset(input_dir: Path) -> dict:
         for v in t:
             if v not in node_ids_set:
                 raise ValueError("instancia referencia terminal que nao existe no nodes.csv")
+        k = len(t)
+        min_k = k if min_k is None else min(min_k, k)
+        max_k = k if max_k is None else max(max_k, k)
 
     if inst_with_terminals == 0:
         raise ValueError("instances.jsonl nao possui nenhum campo de terminais reconhecivel")
@@ -287,6 +321,11 @@ def validate_dataset(input_dir: Path) -> dict:
         "instances_checked": inst_checked,
         "instances_with_terminals": inst_with_terminals,
         "snapshot_pt_refs_found": len(snap_refs),
+        "snapshot_pt_refs_unique": len(set(snap_refs_norm)),
+        "snapshot_pt_refs_missing": len(missing_pt_listed),
+        "snapshot_pt_files_not_listed": len(extra_pt_not_listed),
+        "instances_terminals_k_min": min_k,
+        "instances_terminals_k_max": max_k,
     }
 
 def main():
