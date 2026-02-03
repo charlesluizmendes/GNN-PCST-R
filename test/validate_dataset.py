@@ -193,7 +193,19 @@ def _extract_terminals_from_instance(obj: dict):
             return obj[k]
     return None
 
-def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, physical_edge_set, seed: int = 123):
+def _extract_snapshot_id_from_graph_obj(obj, path: Path):
+    if isinstance(obj, dict):
+        v = obj.get("snapshot")
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    name = path.name
+    if name.endswith(".pt"):
+        name = name[:-3]
+    if name.startswith("as_graph_"):
+        return name[len("as_graph_"):]
+    return name
+
+def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, physical_edge_sets: dict[str, set], seed: int = 123):
     jsonl_files = sorted(list(labels_dir.rglob("*.jsonl")))
     if not jsonl_files:
         return None
@@ -420,10 +432,19 @@ def _validate_labels(labels_dir: Path, instances: list[dict], nodes_count: int, 
         ok_pair_terminals_in_tree_nodes += 1
         ok_pair_all_terminals_reachable += 1
 
+        snap_phys = lab.get("snapshot_next")
+        if snap_phys is None:
+            snap_phys = lab.get("snapshot")
+        snap_phys = str(snap_phys)
+
+        phys_set = physical_edge_sets.get(snap_phys)
+        if phys_set is None:
+            raise ValueError(f"physical_edge_set ausente para snapshot={snap_phys}")
+
         if norm_edges:
             phys_checked += 1
             for a, b in norm_edges:
-                if (a, b) in physical_edge_set:
+                if (a, b) in phys_set:
                     phys_edge_hits += 1
             phys_edge_total += len(norm_edges)
 
@@ -484,7 +505,9 @@ def validate_dataset(input_dir: Path):
     graphs_checked = 0
     total_nodes = 0
     total_edges = 0
-    first_edge_index = None
+
+    physical_edge_sets = {}
+    physical_sizes = []
 
     it = _tqdm(snap_refs, total=len(snap_refs), desc="validate_snapshots")
     for p in it:
@@ -493,8 +516,10 @@ def validate_dataset(input_dir: Path):
         graphs_checked += 1
         total_nodes += n
         total_edges += e
-        if first_edge_index is None:
-            first_edge_index = edge_index
+        snap_id = _extract_snapshot_id_from_graph_obj(obj, p)
+        phys = _build_physical_edge_set(edge_index)
+        physical_edge_sets[str(snap_id)] = phys
+        physical_sizes.append(len(phys))
 
     instances = _read_jsonl(inst_path)
 
@@ -521,10 +546,6 @@ def validate_dataset(input_dir: Path):
         min_k = kk if min_k is None else min(min_k, kk)
         max_k = kk if max_k is None else max(max_k, kk)
 
-    if first_edge_index is None:
-        raise ValueError("edge_index nao encontrado")
-    physical_edge_set = _build_physical_edge_set(first_edge_index)
-
     labels_dir = _labels_probe_dir(input_dir)
     labels_stats = None
     if labels_dir is not None:
@@ -532,7 +553,7 @@ def validate_dataset(input_dir: Path):
             labels_dir=labels_dir,
             instances=instances,
             nodes_count=len(node_ids),
-            physical_edge_set=physical_edge_set,
+            physical_edge_sets=physical_edge_sets,
             seed=123,
         )
 
@@ -550,7 +571,10 @@ def validate_dataset(input_dir: Path):
         "instances_terminals_k_max": max_k,
         "snapshot_pt_refs_found": len(snap_refs),
         "check_physical_edges": True,
-        "physical_edge_set_size": len(physical_edge_set),
+        "physical_edge_sets_snapshots": len(physical_edge_sets),
+        "physical_edge_set_size_min": min(physical_sizes) if physical_sizes else None,
+        "physical_edge_set_size_max": max(physical_sizes) if physical_sizes else None,
+        "physical_edge_set_size_avg": (sum(physical_sizes) / len(physical_sizes)) if physical_sizes else None,
     }
 
     if labels_stats is not None:
@@ -573,7 +597,8 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "validate.jsonl").write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    print(out_pretty)
+    print(f"  -> Validações geradas: {out_pretty}")
+
 
 if __name__ == "__main__":
     try:
