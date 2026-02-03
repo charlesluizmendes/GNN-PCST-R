@@ -148,11 +148,20 @@ def main():
                     snap_next = snaps[t + 1]
                     root_next = int(roots[t + 1])
                     g_next = torch.load(graphs[t + 1], map_location="cpu")
+                    
+                    history = []
+                    if t >= 2:
+                        history = [snaps[t-2], snaps[t-1], snaps[t]]
+                    elif t == 1:
+                        history = [snaps[0], snaps[1]]
+                    else:
+                        history = [snaps[0]]
                 else:
                     snap_t = snaps[0]
                     snap_next = snaps[0]
                     root_next = int(roots[0])
                     g_next = torch.load(graphs[0], map_location="cpu")
+                    history = [snaps[0]]
 
                 num_nodes = int(g_next.get("num_nodes", 0))
                 adj = build_adj_undirected(g_next["edge_index"], num_nodes)
@@ -193,6 +202,7 @@ def main():
                         "id": rec_id,
                         "snapshot": snap_t,
                         "snapshot_next": snap_next,
+                        "history_snapshots": history,
                         "root": int(root_next),
                         "interest_id": int(iid),
                         "radius_hops": int(RADIUS_HOPS),

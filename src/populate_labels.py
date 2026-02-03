@@ -56,9 +56,9 @@ def build_undirected_edges(g):
     for (a, b), t in pair_type.items():
         edges.append([a, b])
         if t == 0:
-            costs.append(1.0)
+            costs.append(0.1) 
         else:
-            costs.append(1.2)
+            costs.append(0.5) 
 
     edges_np = np.asarray(edges, dtype=np.int64)
     costs_np = np.asarray(costs, dtype=np.float64)
@@ -138,9 +138,9 @@ def main():
 
             terminals = [int(x) for x in terminals]
 
-            prizes[root] = 1000000.0
+            prizes[root] = 10.0 
             for t in terminals:
-                prizes[t] = 1000000.0
+                prizes[t] = 10.0
 
             sel_nodes, sel_edges = call_pcst(pcst, edges_u, prizes, costs_u, root)
 
@@ -157,6 +157,7 @@ def main():
                 "id": int(inst["id"]),
                 "snapshot": inst.get("snapshot", ""),
                 "snapshot_next": snap_next,
+                "history_snapshots": inst.get("history_snapshots", []), 
                 "root": root,
                 "interest_id": int(inst.get("interest_id", -1)),
                 "radius_hops": int(inst.get("radius_hops", -1)),

@@ -3,6 +3,7 @@ import bz2
 import csv
 import statistics
 import torch
+import re
 from pathlib import Path
 from tqdm import tqdm
 
@@ -177,11 +178,19 @@ def main():
     edge_index_first, _ = build_edge_index_from_file(files[0], asn2id)
     node_types, server_id = identify_node_types(edge_index_first, len(asn2id))
 
+    last_snapshot_name = None
+
     for p in tqdm(files, desc="build_snapshots: gerando grafos .pt", unit="snapshot"):
         edge_index, edge_type = build_edge_index_from_file(p, asn2id)
+        current_name = snapshot_name(p)
+        
+        ts_match = re.search(r'\d+', current_name)
+        timestamp = int(ts_match.group()) if ts_match else 0
 
         obj = {
-            "snapshot": snapshot_name(p),
+            "snapshot": current_name,
+            "timestamp": timestamp,               
+            "prev_snapshot": last_snapshot_name,  
             "num_nodes": len(asn2id),
             "edge_index": edge_index,
             "edge_type": edge_type,
@@ -191,6 +200,7 @@ def main():
 
         out_path = output_dir / f"as_graph_{obj['snapshot']}.pt"
         torch.save(obj, out_path)
+        last_snapshot_name = current_name 
 
     nodes_path = output_dir / "nodes.csv"
     with open(nodes_path, "w", newline="", encoding="utf-8") as f:
