@@ -41,6 +41,6 @@ pip install pcst_fast
 
 ### Dataset 
 
-the dataset used for pre-training the model is the []().
+the dataset used for pre-training the model is the [CAIDA](https://publicdata.caida.org/).
 
-Download the dataset in click [here]().
+Download the dataset by clicking [here](https://publicdata.caida.org/datasets/as-relationships/serial-2/), then move the files to directory "inputs".

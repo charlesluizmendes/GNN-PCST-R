@@ -29,7 +29,6 @@ def main():
     snapshots_dir = str((out_base / "snapshots").resolve())
     instances_dir = str((out_base / "instances").resolve())
     labels_dir = str((out_base / "labels").resolve())
-    max_instances = str(10)
 
     _run(
         build_snapshots, 
@@ -63,9 +62,7 @@ def main():
             snapshots_dir, 
             instances_dir, 
             "--output_dir", 
-            labels_dir,
-            "--max_instances",
-            max_instances
+            labels_dir            
         ]
     )
 
