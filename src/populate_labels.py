@@ -20,13 +20,27 @@ def call_pcst(fn, edges, prizes, costs, root):
         (edges, prizes, costs, root, 1, "gw", 0),
         (edges, prizes, costs, root, 1, "strong", 0),
     ]
+
     last = None
+    best_nodes = None
+    best_edges = None
+    best_cost = None
+
     for t in trials:
         try:
-            return fn(*t)
+            sel_nodes, sel_edges = fn(*t)
+            sel_edges_arr = np.asarray(sel_edges, dtype=np.int64)
+            c = float(costs[sel_edges_arr].sum()) if sel_edges_arr.size else 0.0
+            if best_cost is None or c < best_cost:
+                best_cost = c
+                best_nodes = sel_nodes
+                best_edges = sel_edges
         except Exception as e:
             last = e
-    raise last
+
+    if best_cost is None:
+        raise last
+    return best_nodes, best_edges
 
 def load_graph(path):
     return torch.load(path, map_location="cpu")
@@ -55,10 +69,7 @@ def build_undirected_edges(g):
     costs = []
     for (a, b), t in pair_type.items():
         edges.append([a, b])
-        if t == 0:
-            costs.append(0.1) 
-        else:
-            costs.append(0.5) 
+        costs.append(1.0 if t == 0 else 1.2)
 
     edges_np = np.asarray(edges, dtype=np.int64)
     costs_np = np.asarray(costs, dtype=np.float64)
