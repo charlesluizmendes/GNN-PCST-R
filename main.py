@@ -2,9 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from src import build_snapshots, generate_instances, populate_labels
+from src import auto_clean, build_snapshots, generate_instances, populate_labels
 from test import validate_dataset
-
 
 def _run(mod, argv):
     prev = sys.argv
@@ -13,7 +12,6 @@ def _run(mod, argv):
         mod.main()
     finally:
         sys.argv = prev
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -31,6 +29,15 @@ def main():
     instances_dir = str((out_base / "instances").resolve())
     labels_dir = str((out_base / "labels").resolve())
     validate_dir = str((out_base / "validate").resolve())
+
+    _run(
+        auto_clean,
+        [
+            "auto_clean.py",
+            "--input_dir",
+            str(out_base),
+        ],
+    )
 
     _run(
         build_snapshots,
@@ -73,14 +80,14 @@ def main():
     _run(
         validate_dataset,
         [
-            "validate_dataset_as.py",
+            "validate_dataset.py",
             "--input_dir",
             str(out_base),
             "--output_dir",
             validate_dir,
+            "--check_physical_edges",
         ],
     )
-
 
 if __name__ == "__main__":
     main()
