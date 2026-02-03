@@ -34,7 +34,9 @@ $ pip install -r requirements.txt
 Or, if you prefer, to install each project dependency manually, run the commands below:
 
 ```
-pip install 
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install numpy
+pip install pcst_fast
 ```
 
 ### Dataset 

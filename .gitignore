@@ -6,19 +6,13 @@ __pycache__/
 venv/
 
 # Outros exemplos comuns
-*.log
 .DS_Store
 
 # VSCode
 .vscode
 
-# Databases and migrations
-*.db
-
 # Datasets
-*.gml
-*.graphml
+*.txt
+*.jsonl
 *.pt
-
-# env
-.env
+*.csv
