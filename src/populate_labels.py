@@ -1,10 +1,16 @@
 import argparse
 import json
 from pathlib import Path
+import numpy as np
 import torch
 from pcst_fast import pcst_fast as pcst
 
 def call_pcst(fn, edges, prizes, costs, root):
+    edges = np.asarray(edges, dtype=np.int64)
+    prizes = np.asarray(prizes, dtype=np.float64)
+    costs = np.asarray(costs, dtype=np.float64)
+    root = int(root)
+
     trials = [
         (edges, prizes, costs, root),
         (edges, prizes, costs, root, 1),
@@ -12,8 +18,6 @@ def call_pcst(fn, edges, prizes, costs, root):
         (edges, prizes, costs, root, 1, "strong"),
         (edges, prizes, costs, root, 1, "gw", 0),
         (edges, prizes, costs, root, 1, "strong", 0),
-        (edges, prizes, costs, root, 1, 0),
-        (edges, prizes, costs, root, 1, 0, 0),
     ]
     last = None
     for t in trials:
@@ -55,9 +59,9 @@ def build_undirected_edges(g, cost_p2p, cost_p2c):
         else:
             costs.append(float(cost_p2c))
 
-    edges_t = torch.tensor(edges, dtype=torch.int64)
-    costs_t = torch.tensor(costs, dtype=torch.float32)
-    return edges_t, costs_t
+    edges_np = np.asarray(edges, dtype=np.int64)
+    costs_np = np.asarray(costs, dtype=np.float64)
+    return edges_np, costs_np
 
 def iter_instances(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -119,30 +123,23 @@ def main():
             else:
                 edges_u, costs_u = edge_cache[snap]
 
-            prizes = torch.zeros(n, dtype=torch.float32)
+            prizes = np.zeros(n, dtype=np.float64)
             root = int(inst["root"])
             terminals = [int(x) for x in inst["terminals"]]
 
-            touched = []
             prizes[root] = float(args.root_prize)
-            touched.append(root)
             for t in terminals:
                 prizes[t] = float(args.terminal_prize)
-                touched.append(t)
 
             sel_nodes, sel_edges = call_pcst(pcst, edges_u, prizes, costs_u, root)
 
-            prizes[touched] = 0.0
-
-            if isinstance(sel_nodes, torch.Tensor):
-                sel_nodes = sel_nodes.tolist()
-            if isinstance(sel_edges, torch.Tensor):
-                sel_edges = sel_edges.tolist()
+            sel_nodes = [int(x) for x in np.asarray(sel_nodes, dtype=np.int64).tolist()]
+            sel_edges = [int(x) for x in np.asarray(sel_edges, dtype=np.int64).tolist()]
 
             tree_edges = []
             for ei_idx in sel_edges:
-                a = int(edges_u[int(ei_idx)][0].item())
-                b = int(edges_u[int(ei_idx)][1].item())
+                a = int(edges_u[ei_idx][0])
+                b = int(edges_u[ei_idx][1])
                 tree_edges.append([a, b])
 
             rec = {
@@ -150,7 +147,7 @@ def main():
                 "snapshot": snap,
                 "root": root,
                 "terminals": terminals,
-                "tree_nodes": [int(x) for x in sel_nodes],
+                "tree_nodes": sel_nodes,
                 "tree_edges": tree_edges
             }
             out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
