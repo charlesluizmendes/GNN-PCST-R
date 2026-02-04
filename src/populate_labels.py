@@ -6,12 +6,7 @@ from pathlib import Path
 from pcst_fast import pcst_fast as pcst
 from tqdm import tqdm
 
-def call_pcst(fn, edges, prizes, costs, root):
-    edges = np.asarray(edges, dtype=np.int64)
-    prizes = np.asarray(prizes, dtype=np.float64)
-    costs = np.asarray(costs, dtype=np.float64)
-    root = int(root)
-
+def call_pcst_ensemble(edges, prizes, costs, root):
     trials = [
         (edges, prizes, costs, root),
         (edges, prizes, costs, root, 1),
@@ -20,168 +15,75 @@ def call_pcst(fn, edges, prizes, costs, root):
         (edges, prizes, costs, root, 1, "gw", 0),
         (edges, prizes, costs, root, 1, "strong", 0),
     ]
-
-    last = None
-    best_nodes = None
-    best_edges = None
-    best_cost = None
-
-    for t in trials:
+    best_res, best_cost = None, float('inf')
+    for args in trials:
         try:
-            sel_nodes, sel_edges = fn(*t)
-            sel_edges_arr = np.asarray(sel_edges, dtype=np.int64)
-            c = float(costs[sel_edges_arr].sum()) if sel_edges_arr.size else 0.0
-            if best_cost is None or c < best_cost:
-                best_cost = c
-                best_nodes = sel_nodes
-                best_edges = sel_edges
-        except Exception as e:
-            last = e
-
-    if best_cost is None:
-        raise last
-    return best_nodes, best_edges
-
-def load_graph(path):
-    return torch.load(path, map_location="cpu")
+            n, e = pcst(*args)
+            c = costs[e].sum() if len(e) > 0 else 0.0
+            if c < best_cost:
+                best_cost, best_res = c, (n, e)
+        except: pass
+    
+    if best_res is None: raise RuntimeError("PCST falhou")
+    return best_res
 
 def build_undirected_edges(g):
-    ei = g["edge_index"]
-    et = g["edge_type"]
-    n_edges = int(ei.size(1))
-
+    ei, et = g["edge_index"], g["edge_type"]
     pair_type = {}
-    for i in range(n_edges):
-        u = int(ei[0, i].item())
-        v = int(ei[1, i].item())
-        t = int(et[i].item())
-        a = u if u < v else v
-        b = v if u < v else u
-        key = (a, b)
-        prev = pair_type.get(key)
-        if prev is None:
-            pair_type[key] = t
-        else:
-            if prev != 0 and t == 0:
-                pair_type[key] = 0
+    for i in range(ei.size(1)):
+        u, v = int(ei[0, i]), int(ei[1, i])
+        t = int(et[i])
+        k = tuple(sorted((u, v)))
 
-    edges = []
-    costs = []
+        if k not in pair_type or (t == 0 and pair_type[k] != 0):
+            pair_type[k] = t
+            
+    edges, costs = [], []
     for (a, b), t in pair_type.items():
         edges.append([a, b])
         costs.append(1.0 if t == 0 else 1.2)
-
-    edges_np = np.asarray(edges, dtype=np.int64)
-    costs_np = np.asarray(costs, dtype=np.float64)
-    return edges_np, costs_np
-
-def iter_instances(path):
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
-
-def count_lines(path):
-    n = 0
-    with open(path, "rb") as f:
-        for _ in f:
-            n += 1
-    return n
+    return np.array(edges, dtype=np.int64), np.array(costs, dtype=np.float64)
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input_dir", required=True, nargs=2)
-    ap.add_argument("--output_dir", required=True)
+    ap.add_argument("--input_dir", required=True, nargs=2); ap.add_argument("--output_dir", required=True)
     args = ap.parse_args()
 
-    snapshots_dir = Path(args.input_dir[0])
-    instances_dir = Path(args.input_dir[1])
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    instances_path = instances_dir / "instances.jsonl"
-    if not instances_path.exists():
-        raise FileNotFoundError(f"instances.jsonl não encontrado em {instances_dir}")
-
-    total = count_lines(instances_path)
-
-    graph_cache = {}
-    edge_cache = {}
-
-    out_path = out_dir / "labels.jsonl"
+    snap_dir, inst_path = Path(args.input_dir[0]), Path(args.input_dir[1]) / "instances.jsonl"
+    out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not inst_path.exists(): raise FileNotFoundError("instances.jsonl")
+    total_lines = sum(1 for _ in open(inst_path, "r"))
+    
+    graph_cache, edge_cache = {}, {}
     written = 0
 
-    with open(out_path, "w", encoding="utf-8") as out_f:
-        for inst in tqdm(
-            iter_instances(instances_path),
-            total=total,
-            desc="populate_labels: escrevendo labels.jsonl",
-            unit="instância"
-        ):
-            snap_next = inst.get("snapshot_next") or inst.get("snapshot")
-            gid = f"as_graph_{snap_next}.pt"
-            gp = snapshots_dir / gid
+    with open(out_dir / "labels.jsonl", "w", encoding="utf-8") as out_f:
+        for line in tqdm(open(inst_path, "r"), total=total_lines, desc="populate_labels: escrevendo labels.jsonl", unit="instância"):
+            if not line.strip(): continue
+            inst = json.loads(line)
+            snap = inst.get("snapshot_next") or inst.get("snapshot")
 
-            if snap_next not in graph_cache:
-                if not gp.exists():
-                    raise FileNotFoundError(f"Grafo não encontrado: {gp}")
-                g = load_graph(gp)
-                graph_cache[snap_next] = g
-            else:
-                g = graph_cache[snap_next]
+            if snap not in graph_cache:
+                graph_cache[snap] = torch.load(snap_dir / f"as_graph_{snap}.pt", map_location="cpu")
+            g = graph_cache[snap]
 
-            n = int(g["num_nodes"])
+            if snap not in edge_cache:
+                edge_cache[snap] = build_undirected_edges(g)
+            edges, costs = edge_cache[snap]
 
-            if snap_next not in edge_cache:
-                edges_u, costs_u = build_undirected_edges(g)
-                edge_cache[snap_next] = (edges_u, costs_u)
-            else:
-                edges_u, costs_u = edge_cache[snap_next]
+            prizes = np.zeros(g["num_nodes"]); prizes[inst["root"]] = 10.0
+            for t in inst["terminals_out"]: prizes[int(t)] = 10.0
 
-            prizes = np.zeros(n, dtype=np.float64)
-            root = int(inst["root"])
-
-            terminals = inst.get("terminals_out")
-            if terminals is None:
-                terminals = inst.get("terminals", [])
-
-            terminals = [int(x) for x in terminals]
-
-            prizes[root] = 10.0 
-            for t in terminals:
-                prizes[t] = 10.0
-
-            sel_nodes, sel_edges = call_pcst(pcst, edges_u, prizes, costs_u, root)
-
-            sel_nodes = [int(x) for x in np.asarray(sel_nodes, dtype=np.int64).tolist()]
-            sel_edges = [int(x) for x in np.asarray(sel_edges, dtype=np.int64).tolist()]
-
-            tree_edges = []
-            for ei_idx in sel_edges:
-                a = int(edges_u[ei_idx][0])
-                b = int(edges_u[ei_idx][1])
-                tree_edges.append([a, b])
-
-            rec = {
-                "id": int(inst["id"]),
-                "snapshot": inst.get("snapshot", ""),
-                "snapshot_next": snap_next,
-                "history_snapshots": inst.get("history_snapshots", []), 
-                "root": root,
-                "interest_id": int(inst.get("interest_id", -1)),
-                "radius_hops": int(inst.get("radius_hops", -1)),
-                "terminals_in": inst.get("terminals_in", []),
-                "terminals_out": terminals,
-                "tree_nodes": sel_nodes,
-                "tree_edges": tree_edges
-            }
-            out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            sel_nodes, sel_e_idx = call_pcst_ensemble(edges, prizes, costs, inst["root"])
+            
+            inst.update({
+                "tree_nodes": list(map(int, sel_nodes)),
+                "tree_edges": edges[sel_e_idx].tolist()
+            })
+            out_f.write(json.dumps(inst, ensure_ascii=False) + "\n")
             written += 1
+            
+    print(f"  -> Labels gerados: {written} instâncias\n")
 
-    print(f"  -> Labels gerados: {written} instâncias")
-    print()
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

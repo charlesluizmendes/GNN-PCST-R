@@ -14,59 +14,44 @@ KEEP_RATIO = 0.7
 SEED = 42
 
 def list_graphs(input_dir):
-    d = Path(input_dir)
-    return sorted(d.glob("as_graph_*.pt"))
+    return sorted(Path(input_dir).glob("as_graph_*.pt"))
 
 def build_adj_undirected(edge_index, num_nodes):
     adj = [set() for _ in range(num_nodes)]
     for i in range(edge_index.size(1)):
-        u = int(edge_index[0, i].item())
-        v = int(edge_index[1, i].item())
-        if 0 <= u < num_nodes and 0 <= v < num_nodes:
-            adj[u].add(v)
-            adj[v].add(u)
+        u, v = int(edge_index[0, i].item()), int(edge_index[1, i].item())
+        adj[u].add(v); adj[v].add(u)
     return adj
 
 def reachable_from_root(adj, root):
     root = int(root)
-    if root < 0 or root >= len(adj):
-        return set()
-    seen = set()
-    q = deque([root])
+    if root < 0 or root >= len(adj): return set()
+    seen, q = set(), deque([root])
     while q:
         u = q.popleft()
-        if u in seen:
-            continue
-        seen.add(u)
-        for v in adj[u]:
-            if v not in seen:
-                q.append(v)
+        if u not in seen:
+            seen.add(u)
+            for v in adj[u]:
+                if v not in seen: q.append(v)
     return seen
 
 def nodes_within_hops(adj, sources, max_hops):
-    if max_hops <= 0:
-        return set(sources)
-    seen = set(sources)
-    q = deque([(s, 0) for s in sources])
+    seen, q = set(sources), deque([(s, 0) for s in sources])
     while q:
         u, d = q.popleft()
-        if d == max_hops:
-            continue
-        for v in adj[u]:
-            if v not in seen:
-                seen.add(v)
-                q.append((v, d + 1))
+        if d < max_hops:
+            for v in adj[u]:
+                if v not in seen:
+                    seen.add(v); q.append((v, d + 1))
     return seen
 
 def sample_local(antennas_set, candidates_set, k, rng):
     candidates = list(candidates_set & antennas_set)
-    if len(candidates) >= k:
-        return set(rng.sample(candidates, k))
+    if len(candidates) >= k: return set(rng.sample(candidates, k))
     out = set(candidates)
-    remaining = k - len(out)
+    rem = k - len(out)
     pool = list(antennas_set - out)
-    if pool and remaining > 0:
-        out |= set(rng.sample(pool, k=min(remaining, len(pool))))
+    if pool and rem > 0: out |= set(rng.sample(pool, k=min(rem, len(pool))))
     return out
 
 def evolve_active(adj, antennas_set, active_prev, k_next, rng):
@@ -76,145 +61,80 @@ def evolve_active(adj, antennas_set, active_prev, k_next, rng):
         cand = nodes_within_hops(adj, [seed], RADIUS_HOPS)
         return sample_local(antennas_set, cand, k_next, rng)
 
-    keep_k = int(round(len(prev) * KEEP_RATIO))
-    keep_k = max(1, min(keep_k, len(prev)))
+    keep_k = max(1, min(int(round(len(prev) * KEEP_RATIO)), len(prev)))
     keep = set(rng.sample(prev, keep_k))
-
-    cand = nodes_within_hops(adj, list(keep), RADIUS_HOPS)
-    cand = (cand & antennas_set) - keep
-
+    cand = (nodes_within_hops(adj, list(keep), RADIUS_HOPS) & antennas_set) - keep
+    
     needed = k_next - len(keep)
-    if needed <= 0:
-        return set(rng.sample(list(keep), k_next))
-
     add = set()
-    cand_list = list(cand)
-    if cand_list:
-        add |= set(rng.sample(cand_list, k=min(needed, len(cand_list))))
-
+    if needed > 0:
+        c_list = list(cand)
+        if c_list: add |= set(rng.sample(c_list, k=min(needed, len(c_list))))
+    
     needed2 = k_next - (len(keep) + len(add))
     if needed2 > 0:
         pool = list(antennas_set - keep - add)
-        if pool:
-            add |= set(rng.sample(pool, k=min(needed2, len(pool))))
-
+        if pool: add |= set(rng.sample(pool, k=min(needed2, len(pool))))
+            
     return keep | add
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input_dir", required=True)
-    ap.add_argument("--output_dir", required=True)
+    ap.add_argument("--input_dir", required=True); ap.add_argument("--output_dir", required=True)
     args = ap.parse_args()
 
     graphs = list_graphs(args.input_dir)
-    if not graphs:
-        return
-
+    if not graphs: return
     rng = random.Random(SEED)
-
-    snaps = []
-    roots = []
-    node_types_ref = None
+    out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Setup
+    g0 = torch.load(graphs[0], map_location="cpu")
+    antennas_all = [n for n, t in g0["node_types"].items() if t == "antena"]
+    snaps, roots = [], []
     for gp in graphs:
         g = torch.load(gp, map_location="cpu")
-        snaps.append(str(g.get("snapshot", "")))
-        roots.append(int(g.get("server_id", 0)))
-        if node_types_ref is None:
-            node_types_ref = g.get("node_types", {})
+        snaps.append(g["snapshot"]); roots.append(g["server_id"])
 
-    antennas_all = [int(nid) for nid, t in (node_types_ref or {}).items() if t == "antena"]
-    if not antennas_all:
-        return
-
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "instances.jsonl"
-
-    active_by_interest = {}
-    k_by_interest = {}
-
-    steps = len(snaps) - 1
-    if steps <= 0:
-        steps = 1
-
-    total = steps * NUM_INTERESTS
     rec_id = 0
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        with tqdm(total=total, desc="generate_instances: escrevendo instances.jsonl", unit="instância") as pbar:
+    active_by_interest = {}
+    steps = max(1, len(snaps) - 1)
+    
+    with open(out_dir / "instances.jsonl", "w", encoding="utf-8") as f:
+        with tqdm(total=steps*NUM_INTERESTS, desc="generate_instances: escrevendo instances.jsonl", unit="instância") as pbar:
             for t in range(steps):
-                if len(snaps) >= 2:
-                    snap_t = snaps[t]
-                    snap_next = snaps[t + 1]
-                    root_next = int(roots[t + 1])
-                    g_next = torch.load(graphs[t + 1], map_location="cpu")
-                    
-                    history = []
-                    if t >= 2:
-                        history = [snaps[t-2], snaps[t-1], snaps[t]]
-                    elif t == 1:
-                        history = [snaps[0], snaps[1]]
-                    else:
-                        history = [snaps[0]]
-                else:
-                    snap_t = snaps[0]
-                    snap_next = snaps[0]
-                    root_next = int(roots[0])
-                    g_next = torch.load(graphs[0], map_location="cpu")
-                    history = [snaps[0]]
+                idx_curr, idx_next = (0, 0) if len(snaps) < 2 else (t, t+1)
+                g_next = torch.load(graphs[idx_next], map_location="cpu")
+                
+                if t >= 2: history = snaps[t-2:t+1]
+                elif t == 1: history = snaps[0:2]
+                else: history = [snaps[0]]
 
-                num_nodes = int(g_next.get("num_nodes", 0))
-                adj = build_adj_undirected(g_next["edge_index"], num_nodes)
-                reach = reachable_from_root(adj, root_next)
-
-                antennas_step = [a for a in antennas_all if a in reach]
-                if not antennas_step:
-                    antennas_step = list(antennas_all)
-                antennas_set_step = set(antennas_step)
+                adj = build_adj_undirected(g_next["edge_index"], g_next["num_nodes"])
+                reach = reachable_from_root(adj, roots[idx_next])
+                antennas_set = (set(antennas_all) & reach) or set(antennas_all)
 
                 for iid in range(NUM_INTERESTS):
                     if iid not in active_by_interest:
-                        k0 = rng.randint(K_MIN, min(K_MAX, len(antennas_step)))
-                        k_by_interest[iid] = k0
-                        seed = rng.choice(antennas_step)
-                        cand = nodes_within_hops(adj, [seed], RADIUS_HOPS)
-                        active_by_interest[iid] = sample_local(antennas_set_step, cand, k0, rng)
-
-                    active_by_interest[iid] = active_by_interest[iid] & antennas_set_step
+                        k0 = rng.randint(K_MIN, min(K_MAX, len(antennas_set)))
+                        seed = rng.choice(list(antennas_set))
+                        active_by_interest[iid] = sample_local(antennas_set, nodes_within_hops(adj, [seed], RADIUS_HOPS), k0, rng)
+                    
+                    active_by_interest[iid] &= antennas_set
                     if not active_by_interest[iid]:
-                        k0 = rng.randint(K_MIN, min(K_MAX, len(antennas_step)))
-                        k_by_interest[iid] = k0
-                        seed = rng.choice(antennas_step)
-                        cand = nodes_within_hops(adj, [seed], RADIUS_HOPS)
-                        active_by_interest[iid] = sample_local(antennas_set_step, cand, k0, rng)
+                         k0 = rng.randint(K_MIN, min(K_MAX, len(antennas_set)))
+                         active_by_interest[iid] = sample_local(antennas_set, nodes_within_hops(adj, [rng.choice(list(antennas_set))], RADIUS_HOPS), k0, rng)
 
-                    k_prev = int(k_by_interest.get(iid, K_MIN))
-                    delta = rng.randint(-3, 3)
-                    k_next = max(K_MIN, min(K_MAX, k_prev + delta, len(antennas_step)))
-
-                    terminals_in = sorted(list(active_by_interest[iid]))
-                    terminals_out = sorted(list(evolve_active(adj, antennas_set_step, active_by_interest[iid], k_next, rng)))
-
+                    k_next = max(K_MIN, min(K_MAX, len(active_by_interest[iid]) + rng.randint(-3, 3), len(antennas_set)))
+                    terminals_out = sorted(list(evolve_active(adj, antennas_set, active_by_interest[iid], k_next, rng)))
                     active_by_interest[iid] = set(terminals_out)
-                    k_by_interest[iid] = k_next
 
-                    rec = {
-                        "id": rec_id,
-                        "snapshot": snap_t,
-                        "snapshot_next": snap_next,
-                        "history_snapshots": history,
-                        "root": int(root_next),
-                        "interest_id": int(iid),
-                        "radius_hops": int(RADIUS_HOPS),
-                        "terminals_in": terminals_in,
-                        "terminals_out": terminals_out
-                    }
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                    rec_id += 1
-                    pbar.update(1)
+                    f.write(json.dumps({
+                        "id": rec_id, "snapshot": snaps[idx_curr], "snapshot_next": snaps[idx_next],
+                        "history_snapshots": history, "root": roots[idx_next], "interest_id": iid,
+                        "radius_hops": RADIUS_HOPS, "terminals_in": sorted(list(active_by_interest[iid])), "terminals_out": terminals_out
+                    }) + "\n")
+                    rec_id += 1; pbar.update(1)
+    print(f"  -> Instances geradas: {rec_id}\n")
 
-    print(f"  -> Instances geradas: {rec_id}")
-    print()
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

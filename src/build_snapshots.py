@@ -17,15 +17,10 @@ def iter_records(path):
     with open_text(path) as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
+            if not line or line.startswith("#"): continue
             parts = line.split("|")
-            if len(parts) < 3:
-                continue
-            a = int(parts[0])
-            b = int(parts[1])
-            rel = int(parts[2])
-            yield a, b, rel
+            if len(parts) < 3: continue
+            yield int(parts[0]), int(parts[1]), int(parts[2])
 
 def snapshot_name(path):
     name = Path(path).name
@@ -36,116 +31,69 @@ def build_adjacency_list(edge_index, num_nodes):
     for i in tqdm(range(edge_index.size(1)), desc="build_snapshots: construindo grafo", unit="aresta"):
         u = int(edge_index[0, i].item())
         v = int(edge_index[1, i].item())
-        adj[u].add(v)
-        adj[v].add(u)
+        adj[u].add(v); adj[v].add(u)
     return adj
 
 def identify_server(adj, num_nodes):
-    degrees = []
-    for node in tqdm(range(num_nodes), desc="build_snapshots: calculando graus", unit="nó"):
-        degrees.append(len(adj[node]))
-
+    degrees = [len(adj[node]) for node in range(num_nodes)]
     server_id = degrees.index(max(degrees))
-    max_degree = degrees[server_id]
-
-    print(f"  -> Servidor: node_id={server_id}, grau={max_degree}")
-
+    print(f"  -> Servidor: node_id={server_id}, grau={degrees[server_id]}")
     return server_id, degrees
 
 def identify_peripheral_nodes_adaptive(adj, num_nodes, degrees):
     valid_degrees = [d for d in degrees if d > 0]
-
     if len(valid_degrees) >= 4:
-        qs = statistics.quantiles(valid_degrees, n=4)
-        q1 = qs[0]
-        q2 = qs[1]
-        q3 = qs[2]
+        q1 = statistics.quantiles(valid_degrees, n=4)[0]
     elif len(valid_degrees) > 0:
         q1 = float(min(valid_degrees))
-        q2 = float(statistics.median(valid_degrees))
-        q3 = float(max(valid_degrees))
     else:
         q1 = 0.0
-        q2 = 0.0
-        q3 = 0.0
-
-    print(f"  -> Distribuição de graus: Q1={q1:.1f}, Mediana={q2:.1f}, Q3={q3:.1f}")
 
     neighbor_degree_by_node = []
-    for node in tqdm(range(num_nodes), desc="build_snapshots: analisando vizinhanças", unit="nó"):
+    for node in range(num_nodes):
         if degrees[node] > 0:
             neighbor_degrees = [degrees[n] for n in adj[node]]
-            avg_neighbor_degree = sum(neighbor_degrees) / len(neighbor_degrees)
-            neighbor_degree_by_node.append(avg_neighbor_degree)
-
-    if neighbor_degree_by_node:
-        median_neighbor_degree = statistics.median(neighbor_degree_by_node)
-    else:
-        median_neighbor_degree = 0
-
-    print(f"  -> Mediana do grau médio dos vizinhos: {median_neighbor_degree:.1f}")
-
+            if neighbor_degrees:
+                neighbor_degree_by_node.append(sum(neighbor_degrees) / len(neighbor_degrees))
+    
+    median_neighbor_degree = statistics.median(neighbor_degree_by_node) if neighbor_degree_by_node else 0
+    
     peripheral = set()
-
     for node in tqdm(range(num_nodes), desc="build_snapshots: classificando antenas", unit="nó"):
         degree = degrees[node]
-
-        if degree == 0:
-            continue
-
+        if degree == 0: continue
         if degree == 1:
             peripheral.add(node)
-            continue
-
-        if degree <= q1:
-            neighbor_degrees = [degrees[n] for n in adj[node]]
-            avg_neighbor_degree = sum(neighbor_degrees) / len(neighbor_degrees)
-
-            if avg_neighbor_degree > median_neighbor_degree:
+        elif degree <= q1:
+            vals = [degrees[n] for n in adj[node]]
+            if vals and (sum(vals) / len(vals)) > median_neighbor_degree:
                 peripheral.add(node)
-
+    
     print(f"  -> Antenas identificadas: {len(peripheral)} nós")
-
     return peripheral
 
 def identify_node_types(edge_index, num_nodes):
     adj = build_adjacency_list(edge_index, num_nodes)
-
     server_id, degrees = identify_server(adj, num_nodes)
-
     peripheral = identify_peripheral_nodes_adaptive(adj, num_nodes, degrees)
-
+    
     node_types = {}
     for node in range(num_nodes):
-        if node == server_id:
-            node_types[node] = "servidor"
-        elif node in peripheral:
-            node_types[node] = "antena"
-        else:
-            node_types[node] = "roteador"
-
+        if node == server_id: node_types[node] = "servidor"
+        elif node in peripheral: node_types[node] = "antena"
+        else: node_types[node] = "roteador"
     return node_types, server_id
 
 def build_edge_index_from_file(path, asn2id):
-    src = []
-    dst = []
-    et = []
-
+    src, dst, et = [], [], []
     for a, b, rel in iter_records(path):
-        ia = asn2id[a]
-        ib = asn2id[b]
-
+        ia, ib = asn2id[a], asn2id[b]
         if rel == 0:
-            src.append(ia); dst.append(ib); et.append(0)
-            src.append(ib); dst.append(ia); et.append(0)
+            src.extend([ia, ib]); dst.extend([ib, ia]); et.extend([0, 0])
         elif rel == -1:
-            src.append(ia); dst.append(ib); et.append(1)
-            src.append(ib); dst.append(ia); et.append(2)
-
-    edge_index = torch.tensor([src, dst], dtype=torch.long)
-    edge_type = torch.tensor(et, dtype=torch.uint8)
-
-    return edge_index, edge_type
+            src.extend([ia, ib]); dst.extend([ib, ia]); et.extend([1, 2])
+            
+    return torch.tensor([src, dst], dtype=torch.long), torch.tensor(et, dtype=torch.uint8)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -153,25 +101,18 @@ def main():
     ap.add_argument("--output_dir", required=True)
     args = ap.parse_args()
 
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    input_dir, output_dir = Path(args.input_dir), Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     files = sorted(list(input_dir.glob("*.txt")) + list(input_dir.glob("*.txt.bz2")))
-    if not files:
-        return
+    if not files: return
 
     nodes = set()
     for p in files:
-        for a, b, rel in iter_records(p):
-            nodes.add(a)
-            nodes.add(b)
+        for a, b, _ in iter_records(p): nodes.add(a); nodes.add(b)
+    asn2id = {asn: i for i, asn in enumerate(sorted(nodes))}
 
-    asn_list = sorted(nodes)
-    asn2id = {asn: i for i, asn in enumerate(asn_list)}
-
-    snaps_path = output_dir / "snapshots.txt"
-    with open(snaps_path, "w", encoding="utf-8") as f:
+    with open(output_dir / "snapshots.txt", "w", encoding="utf-8") as f:
         for p in tqdm(files, desc="build_snapshots: salvando snapshots.txt", unit="snapshot"):
             f.write(snapshot_name(p) + "\n")
 
@@ -179,38 +120,29 @@ def main():
     node_types, server_id = identify_node_types(edge_index_first, len(asn2id))
 
     last_snapshot_name = None
-
     for p in tqdm(files, desc="build_snapshots: gerando grafos .pt", unit="snapshot"):
         edge_index, edge_type = build_edge_index_from_file(p, asn2id)
         current_name = snapshot_name(p)
-        
-        ts_match = re.search(r'\d+', current_name)
-        timestamp = int(ts_match.group()) if ts_match else 0
+        ts = int(re.search(r'\d+', current_name).group()) if re.search(r'\d+', current_name) else 0
 
         obj = {
             "snapshot": current_name,
-            "timestamp": timestamp,               
-            "prev_snapshot": last_snapshot_name,  
+            "timestamp": ts,
+            "prev_snapshot": last_snapshot_name,
             "num_nodes": len(asn2id),
             "edge_index": edge_index,
             "edge_type": edge_type,
             "server_id": server_id,
             "node_types": node_types
         }
+        torch.save(obj, output_dir / f"as_graph_{current_name}.pt")
+        last_snapshot_name = current_name
 
-        out_path = output_dir / f"as_graph_{obj['snapshot']}.pt"
-        torch.save(obj, out_path)
-        last_snapshot_name = current_name 
-
-    nodes_path = output_dir / "nodes.csv"
-    with open(nodes_path, "w", newline="", encoding="utf-8") as f:
+    with open(output_dir / "nodes.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["node_id", "asn", "tipo"])
-        for asn, node_id in tqdm(asn2id.items(), total=len(asn2id), desc="build_snapshots: salvando nodes.csv", unit="nó"):
-            tipo = node_types.get(node_id, "roteador")
-            w.writerow([node_id, asn, tipo])
-
+        for asn, node_id in tqdm(asn2id.items(), desc="build_snapshots: salvando nodes.csv", unit="nó"):
+            w.writerow([node_id, asn, node_types.get(node_id, "roteador")])
     print()
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
