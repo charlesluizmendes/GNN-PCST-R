@@ -2,10 +2,11 @@ import argparse
 import csv
 import json
 import sys
+from typing import Optional
 from pathlib import Path
 import heapq
 
-def _find_file(root: Path, name: str) -> Path | None:
+def _find_file(root: Path, name: str) -> Optional[Path]:
     direct = root / name
     if direct.exists():
         return direct
@@ -186,7 +187,7 @@ def _build_physical_edge_set(edge_index):
             s.add((y, x))
     return s
 
-def _labels_probe_dir(input_dir: Path) -> Path | None:
+def _labels_probe_dir(input_dir: Path) -> Optional[Path]:
     direct = input_dir / "labels"
     if direct.exists() and direct.is_dir():
         return direct
