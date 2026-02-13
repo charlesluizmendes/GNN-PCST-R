@@ -18,6 +18,7 @@ Or manually through the following commands:
 
 ```bash
 pip install ipykernel
+pip install nbformat
 pip install tqdm
 pip install numpy
 pip install pcst_fast
