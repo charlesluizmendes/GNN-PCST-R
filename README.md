@@ -18,6 +18,10 @@ Or manually through the following commands:
 
 ```bash
 pip install ipykernel
+pip install tqdm
+pip install numpy
+pip install pcst_fast
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
 ## Execution
