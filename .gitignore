@@ -15,7 +15,6 @@ venv/
 
 # Datasets
 *.txt
-*.bz2
 *.jsonl
 *.pt
 *.csv
